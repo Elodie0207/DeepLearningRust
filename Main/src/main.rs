@@ -13,8 +13,13 @@ type QFunction = HashMap<(State, Action), f64>;
 type Returns = HashMap<(State, Action), Vec<f64>>;
 type StateActions = Vec<(State, Action)>;
 type TransitionMap = Vec<Vec<Vec<Transition>>>;
-
+#[derive(Clone, Copy)]
+pub struct LineWorldEnvFree {
+    num_cells: usize,
+    agent_pos: usize,
+}
 // Structures
+#[derive(Clone)]
 struct Transition {
     next: usize,
     reward: f64,
@@ -109,7 +114,6 @@ impl Policy {
     }
 }
 
-
 fn iterative_policy_evaluation(
     states: &[State],
     actions: &[Action],
@@ -130,7 +134,9 @@ fn iterative_policy_evaluation(
                 }
             }
 
-            delta = delta.max((value - value_function[state]).abs());
+            if (value - value_function[state]).abs() > delta {
+                delta = (value - value_function[state]).abs();
+            }
             value_function[state] = value;
         }
 
@@ -173,7 +179,9 @@ fn value_iteration(
 
             v[s] = best_value;
             policy.insert(s, best_action);
-            delta = delta.max((old_v - best_value).abs());
+            if (old_v - best_value).abs() > delta {
+                delta = (old_v - best_value).abs();
+            }
         }
 
         if delta < THETA {
@@ -189,41 +197,43 @@ fn policy_iteration(
     actions: &[Action],
     transitions: &TransitionMap,
 ) -> (Vec<f64>, HashMap<State, Action>) {
-    let mut v = vec![0.0; states.len()];
-    let mut policy: HashMap<State, Action> = states.iter().map(|&s| (s, 0)).collect();
+    let mut v = vec![0.0; states.len()];  // Fonction de valeur V pour chaque état
+    let mut policy: HashMap<State, Action> = states.iter().map(|&s| (s, 0)).collect(); // Politique initiale
 
     loop {
-        // Policy Evaluation
+        // Évaluation de la politique
         loop {
             let mut delta = 0.0;
             for &s in states {
                 let tmp = v[s];
-                let a = policy[&s];
+                let a = policy[&s];  // Action selon la politique
                 let mut new_value = 0.0;
+                // Somme des valeurs basées sur les transitions de l'état s
                 for transition in &transitions[s][a] {
-                    new_value += transition.proba *
-                        (transition.reward + GAMMA * v[transition.next]);
+                    new_value += transition.proba * (transition.reward + GAMMA * v[transition.next]);
                 }
                 v[s] = new_value;
-                delta = delta.max((tmp - new_value).abs());
+                if (tmp - new_value).abs() > delta {
+                    delta = (tmp - new_value).abs();
+                }
             }
             if delta < THETA {
                 break;
             }
         }
 
-        // Policy Improvement
+        // Amélioration de la politique
         let mut policy_stable = true;
         for &s in states {
             let old_action = policy[&s];
             let mut best_action = old_action;
             let mut best_value = f64::NEG_INFINITY;
 
+            // Chercher l'action qui maximise la valeur
             for &a in actions {
                 let mut new_value = 0.0;
                 for transition in &transitions[s][a] {
-                    new_value += transition.proba *
-                        (transition.reward + GAMMA * v[transition.next]);
+                    new_value += transition.proba * (transition.reward + GAMMA * v[transition.next]);
                 }
                 if new_value > best_value {
                     best_value = new_value;
@@ -237,6 +247,7 @@ fn policy_iteration(
             }
         }
 
+        // Si la politique est stable, on arrête
         if policy_stable {
             break;
         }
@@ -340,27 +351,97 @@ fn on_policy_mc_control(
     }
 }
 
-fn main() {
-    let states = vec![0, 1, 2];
-    let actions = vec![0, 1];
+impl LineWorldEnvFree {
+    pub fn new() -> Self {
+        Self {
+            num_cells: 5,
+            agent_pos: 2, // Agent starts in the middle (index 2)
+        }
+    }
 
-    let transitions = vec![
-        vec![
-            vec![Transition { next: 0, reward: 0.0, proba: 1.0 }],
-            vec![Transition { next: 1, reward: 1.0, proba: 1.0 }],
-        ],
-        vec![
-            vec![Transition { next: 2, reward: 2.0, proba: 1.0 }],
-            vec![Transition { next: 0, reward: 0.0, proba: 1.0 }],
-        ],
-        vec![
-            vec![Transition { next: 2, reward: 0.0, proba: 1.0 }],
-            vec![Transition { next: 2, reward: 0.0, proba: 1.0 }],
-        ],
-    ];
+    pub fn reset(&mut self) -> usize {
+        self.agent_pos = self.num_cells / 2;
+        self.state_id()
+    }
 
-    let (value_function, policy) = value_iteration(&states, &actions, &transitions);
+    pub fn state_dim(&self) -> usize {
+        self.num_cells
+    }
 
+    pub fn action_dim(&self) -> usize {
+        2 // Two actions: 0 for left, 1 for right
+    }
+
+    pub fn state_id(&self) -> usize {
+        self.agent_pos
+    }
+
+    pub fn is_game_over(&self) -> bool {
+        self.agent_pos == 0 || self.agent_pos == self.num_cells - 1
+    }
+
+    pub fn available_actions(&self) -> Vec<usize> {
+        if self.is_game_over() {
+            return Vec::new(); // No available actions if the game is over
+        }
+        vec![0, 1] // 0: move left, 1: move right
+    }
+
+    pub fn step(&mut self, action: usize) {
+        if self.is_game_over() {
+            println!("Game is over and you want to play? You can't move!");
+            return;
+        }
+
+        match action {
+            0 => self.agent_pos -= 1, // Move left
+            1 => self.agent_pos += 1, // Move right
+            _ => println!("Invalid action!"),
+        }
+    }
+
+    pub fn score(&self) -> f64 {
+        if self.agent_pos == 0 {
+            return -1.0; // Penalty for reaching the leftmost position
+        } else if self.agent_pos == self.num_cells - 1 {
+            return 1.0; // Reward for reaching the rightmost position
+        }
+        0.0 // No reward or penalty
+    }
+
+    pub fn terminal_states(&self) -> Vec<usize> {
+        vec![0, self.num_cells - 1] // Left and right boundaries
+    }
+
+    pub fn display(&self) {
+        for i in 0..self.num_cells {
+            if i == self.agent_pos {
+                print!("X"); // Agent's position
+            } else {
+                print!("_"); // Empty space
+            }
+        }
+        println!();
+    }
+}
+
+fn Lineworld(){
+    let states = vec![0, 1, 2, 3, 4]; // États du Line World
+    let actions = vec![0, 1]; // Actions (0: Aller à gauche, 1: Aller à droite)
+
+    // Initialisation de la matrice de transitions
+    let mut transitions = vec![vec![vec![]; actions.len()]; states.len()];
+    transitions[1][1] = vec![Transition { next: 2, reward: 0.0, proba: 1.0 }];
+    transitions[2][1] = vec![Transition { next: 3, reward: 0.0, proba: 1.0 }];
+    transitions[3][1] = vec![Transition { next: 4, reward: 1.0, proba: 1.0 }];
+    transitions[3][0] = vec![Transition { next: 2, reward: 0.0, proba: 1.0 }];
+    transitions[2][0] = vec![Transition { next: 1, reward: 0.0, proba: 1.0 }];
+    transitions[1][0] = vec![Transition { next: 0, reward: -1.0, proba: 1.0 }];
+
+    // Exécution de la Policy Iteration
+    let (value_function, policy) = policy_iteration(&states, &actions, &transitions);
+
+    // Affichage des résultats
     for (state, value) in value_function.iter().enumerate() {
         println!("V({}) = {:.4}", state, value);
     }
@@ -368,4 +449,7 @@ fn main() {
     for (state, action) in policy.iter() {
         println!("π({}) = {}", state, action);
     }
+}
+fn main() {
+   Lineworld();
 }
